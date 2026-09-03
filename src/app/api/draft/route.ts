@@ -54,7 +54,12 @@ export async function POST(req: Request) {
       missing,
     });
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ error: message, model: MODEL_ID, ms: Date.now() - started }, { status: 502 });
+    const project = process.env.GOOGLE_CLOUD_PROJECT || "test-project-0728-467323";
+    const location = process.env.GOOGLE_CLOUD_LOCATION || "global";
+    let message = e instanceof Error ? e.message : String(e);
+    if (!message.includes(`project ${project}`) || !message.includes(`location ${location}`)) {
+      message = `Vertex AI (project ${project}, location ${location}): ${message}`;
+    }
+    return NextResponse.json({ error: message, model: MODEL_ID, project, location, ms: Date.now() - started }, { status: 502 });
   }
 }
