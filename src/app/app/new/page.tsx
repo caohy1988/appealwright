@@ -12,6 +12,14 @@ const CITIES = ["Kirkland", "Bellevue", "Redmond", "Bothell", "Woodinville"];
 function slug(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 40);
 }
+// Strips commas, spaces, and currency symbols. Returns null when the field is blank or not a number.
+function parseNum(raw: string): number | null {
+  const t = raw.replace(/[$,\s]/g, "");
+  if (t === "") return null;
+  if (!/^\d+(\.\d+)?$/.test(t)) return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
 function parcelFor(s: string) {
   let h = 5381;
   for (const ch of s) h = ((h << 5) + h + ch.charCodeAt(0)) >>> 0;
@@ -38,12 +46,23 @@ export default function NewCase() {
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    const av = Number(assessed.replace(/[^0-9.]/g, ""));
     if (address.trim().length < 5) return setErr("Enter a street address.");
-    if (!av || av < 50000) return setErr("Enter the assessed value from the valuation notice.");
-    const factsAssumed = !sqft || !beds || !baths || !yearBuilt;
+    const av = parseNum(assessed);
+    if (av === null || av < 50000) return setErr("Enter the assessed value from the valuation notice, for example 1,250,000.");
+    const opt: Record<string, number | null> = { sqft: parseNum(sqft), beds: parseNum(beds), baths: parseNum(baths), yearBuilt: parseNum(yearBuilt), lot: parseNum(lot) };
+    const labels: Record<string, string> = { sqft: "Living SF", beds: "Beds", baths: "Baths", yearBuilt: "Built", lot: "Lot SF" };
+    for (const [k, v] of Object.entries(opt)) {
+      if (v === null && ({ sqft, beds, baths, yearBuilt, lot } as Record<string, string>)[k].trim() !== "") return setErr(`${labels[k]} must be a number, or leave it blank.`);
+    }
+    if (opt.sqft !== null && (opt.sqft < 300 || opt.sqft > 20000)) return setErr("Living SF looks wrong. Enter square feet, for example 2,100.");
+    if (opt.yearBuilt !== null && (opt.yearBuilt < 1850 || opt.yearBuilt > 2026)) return setErr("Built must be a four-digit year.");
+    if (opt.beds !== null && (opt.beds < 1 || opt.beds > 12)) return setErr("Beds must be between 1 and 12.");
+    if (opt.baths !== null && (opt.baths < 0.5 || opt.baths > 12)) return setErr("Baths must be between 0.5 and 12.");
+    if (opt.lot !== null && (opt.lot < 500 || opt.lot > 2000000)) return setErr("Lot SF looks wrong. Enter square feet, for example 7,500.");
+    const factsAssumed = [sqft, beds, baths, yearBuilt, lot].some((v) => v.trim() === "");
     const { lat, lng } = locateAddress(`${address} ${city}`);
-    const id = `${slug(address)}-${parcelFor(address + city).slice(-4)}`;
+    // Unique per creation so a re-entered address never inherits a stale draft.
+    const id = `${slug(address)}-${Date.now().toString(36)}`;
     const s: Subject = {
       id,
       address: address.trim(),
@@ -51,11 +70,11 @@ export default function NewCase() {
       zip: city === "Kirkland" ? "98034" : city === "Redmond" ? "98052" : city === "Bellevue" ? "98004" : city === "Bothell" ? "98011" : "98072",
       parcel: parcelFor(address + city),
       assessedValue: Math.round(av),
-      beds: Number(beds) || 3,
-      baths: Number(baths) || 2,
-      sqft: Number(sqft) || 2000,
-      lotSqft: Number(lot) || 7500,
-      yearBuilt: Number(yearBuilt) || 1985,
+      beds: opt.beds ?? 3,
+      baths: opt.baths ?? 2,
+      sqft: opt.sqft ?? 2000,
+      lotSqft: opt.lot ?? 7500,
+      yearBuilt: opt.yearBuilt ?? 1985,
       lat,
       lng,
       status: "new",
@@ -71,7 +90,7 @@ export default function NewCase() {
   return (
     <div className="mx-auto max-w-2xl">
       <h1 className="text-2xl font-semibold tracking-tight">New case</h1>
-      <p className="mt-1 text-sm text-ink-700">Address and assessed value are enough. Facts you leave blank are assumed and flagged on the workstation.</p>
+      <p className="mt-1 text-sm text-ink-700">Address and assessed value are enough. Facts you leave blank are assumed and flagged on the workstation. Commas are fine.</p>
       <Card className="mt-6 p-4 md:p-6">
         <form onSubmit={submit} className="grid gap-4" noValidate>
           <div className="grid gap-4 sm:grid-cols-[1fr_160px]">

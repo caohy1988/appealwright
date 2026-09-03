@@ -70,6 +70,7 @@ export type Recommendation = "appeal" | "marginal" | "hold";
 export type Analysis = {
   subject: Subject;
   comps: AdjustedComp[];
+  excluded: AdjustedComp[];
   searchRadiusMi: number;
   neighborhoodPpsf: number;
   trend: TrendPoint[];
@@ -93,6 +94,7 @@ export type Draft = {
   letterModel: LetterModel;
   generatedAt: string;
   editedAt?: string;
+  inputHash?: string;
 };
 
 export type PlanId = "starter" | "team" | "firm";

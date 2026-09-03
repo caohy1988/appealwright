@@ -11,6 +11,7 @@ type Persisted = {
   cases: Subject[];
   drafts: Record<string, Draft>;
   org: Org;
+  exclusions: Record<string, string[]>;
 };
 
 type Store = Persisted & {
@@ -22,12 +23,13 @@ type Store = Persisted & {
   saveDraft: (d: Draft) => void;
   clearDraft: (caseId: string) => void;
   invite: (email: string) => { ok: boolean; message?: string };
-  setMemberStatus: (id: string, status: Member["status"]) => void;
+  setMemberStatus: (id: string, status: Member["status"]) => { ok: boolean; message?: string };
+  setExclusions: (caseId: string, compIds: string[]) => void;
   setPlan: (plan: PlanId) => { ok: boolean; message?: string };
   reset: () => void;
 };
 
-const initial: Persisted = { session: false, cases: SUBJECTS, drafts: {}, org: ORG };
+const initial: Persisted = { session: false, cases: SUBJECTS, drafts: {}, org: ORG, exclusions: {} };
 
 const Ctx = createContext<Store | null>(null);
 
@@ -55,6 +57,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           cases: mergeCases(p.cases),
           drafts: p.drafts ?? {},
           org: p.org ?? ORG,
+          exclusions: p.exclusions ?? {},
         });
       }
     } catch {}
@@ -115,9 +118,26 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
-  const setMemberStatus = useCallback(
-    (id: string, status: Member["status"]) =>
-      setState((s) => ({ ...s, org: { ...s.org, members: s.org.members.map((m) => (m.id === id ? { ...m, status } : m)) } })),
+  const setMemberStatus = useCallback((id: string, status: Member["status"]) => {
+    let result = { ok: true } as { ok: boolean; message?: string };
+    setState((s) => {
+      const target = s.org.members.find((m) => m.id === id);
+      if (!target) return s;
+      if (status !== "inactive" && target.status === "inactive") {
+        const plan = PLANS.find((p) => p.id === s.org.plan)!;
+        const used = s.org.members.filter((m) => m.status !== "inactive").length;
+        if (used >= plan.seats) {
+          result = { ok: false, message: `All ${plan.seats} seats on ${plan.name} are in use. Deactivate someone else or upgrade before reactivating ${target.name}.` };
+          return s;
+        }
+      }
+      return { ...s, org: { ...s.org, members: s.org.members.map((m) => (m.id === id ? { ...m, status } : m)) } };
+    });
+    return result;
+  }, []);
+
+  const setExclusions = useCallback(
+    (caseId: string, compIds: string[]) => setState((s) => ({ ...s, exclusions: { ...s.exclusions, [caseId]: compIds } })),
     [],
   );
 
@@ -143,8 +163,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo<Store>(
-    () => ({ ...state, hydrated, login, logout, addCase, setCaseStatus, saveDraft, clearDraft, invite, setMemberStatus, setPlan, reset }),
-    [state, hydrated, login, logout, addCase, setCaseStatus, saveDraft, clearDraft, invite, setMemberStatus, setPlan, reset],
+    () => ({ ...state, hydrated, login, logout, addCase, setCaseStatus, saveDraft, clearDraft, invite, setMemberStatus, setExclusions, setPlan, reset }),
+    [state, hydrated, login, logout, addCase, setCaseStatus, saveDraft, clearDraft, invite, setMemberStatus, setExclusions, setPlan, reset],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

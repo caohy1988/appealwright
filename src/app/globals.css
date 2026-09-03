@@ -62,7 +62,7 @@ body {
   body {
     background: #fff;
   }
-  body > * {
+  body > *:not(#letter-print) {
     display: none !important;
   }
   #letter-print {

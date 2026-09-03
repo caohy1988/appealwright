@@ -56,11 +56,23 @@ export default function Seats() {
                     {m.role === "owner" ? (
                       <span className="text-xs text-ink-500">Owner</span>
                     ) : m.status === "inactive" ? (
-                      <Button variant="secondary" onClick={() => store.setMemberStatus(m.id, "active")}>
+                      <Button
+                        variant="secondary"
+                        onClick={() => {
+                          const r = store.setMemberStatus(m.id, "active");
+                          setMsg(r.ok ? { ok: true, text: `${m.name} reactivated.` } : { ok: false, text: r.message! });
+                        }}
+                      >
                         Reactivate
                       </Button>
                     ) : (
-                      <Button variant="danger" onClick={() => store.setMemberStatus(m.id, "inactive")}>
+                      <Button
+                        variant="danger"
+                        onClick={() => {
+                          store.setMemberStatus(m.id, "inactive");
+                          setMsg({ ok: true, text: `${m.name} deactivated. The seat is free.` });
+                        }}
+                      >
                         Deactivate
                       </Button>
                     )}

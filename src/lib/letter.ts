@@ -1,11 +1,11 @@
 import { ANALYST, ORG_ADDRESS, ORG_NAME, TODAY } from "./seed";
 import type { Analysis } from "./types";
-import { baths, dateLong, money, num, pct } from "./format";
+import { baths, dateLong, dateShort, money, num, pct } from "./format";
 
 export const LEGAL_FOOTER =
   "Draft prepared for human review. Not legal advice. Not a filing. Comparable sales are synthetic demonstration data.";
 
-export const BOE_ADDRESS = ["King County Board of Equalization", "500 Fourth Avenue, Room 510", "Seattle, WA 98104"];
+export const BOE_ADDRESS = ["King County Board of Equalization", "516 Third Avenue, Room 1222", "Seattle, WA 98104"];
 
 function pad(s: string, w: number, right = false): string {
   if (s.length >= w) return s;
@@ -107,10 +107,19 @@ export function validateLetter(text: string, a: Analysis): string[] {
   const norm = text.replace(/\s+/g, " ");
   const has = (needle: string) => norm.includes(needle);
   if (!has(a.subject.parcel)) missing.push("parcel number");
-  if (!has(money(a.subject.assessedValue))) missing.push("assessed value");
-  if (!has(money(a.indicatedValue))) missing.push("requested value");
+  if (!has(money(a.subject.assessedValue))) missing.push(`assessed value ${money(a.subject.assessedValue)}`);
+  if (!has(money(a.indicatedValue))) missing.push(`indicated value ${money(a.indicatedValue)}`);
   for (const c of a.comps) {
-    if (!has(c.address)) missing.push(`comparable ${c.address}`);
+    const label = `comp ${c.address}`;
+    if (!has(c.address)) missing.push(`${label} address`);
+    if (!has(dateLong(c.saleDate)) && !has(dateShort(c.saleDate))) missing.push(`${label} sale date`);
+    if (!has(money(c.salePrice))) missing.push(`${label} sale price`);
+    if (!has(num(c.sqft))) missing.push(`${label} square feet`);
+    if (!has(money(c.pricePerSqft))) missing.push(`${label} $/sqft`);
+    if (!has(money(c.adjustedPrice))) missing.push(`${label} adjusted price`);
+    for (const adj of c.adjustments) {
+      if (!has(money(Math.abs(adj.amount)))) missing.push(`${label} ${adj.label.toLowerCase()} adjustment`);
+    }
   }
   if (!/84\.40\.030/.test(norm)) missing.push("RCW 84.40.030");
   return missing;

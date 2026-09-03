@@ -7,22 +7,31 @@ import { CompsTable } from "@/components/CompsTable";
 import { LetterEditor } from "@/components/LetterEditor";
 import { Sparkline } from "@/components/Sparkline";
 import { Badge, Button, Card, SectionTitle, Stat } from "@/components/ui";
-import { analyzeSubject, initialSteps } from "@/lib/agent";
+import { MIN_COMPS, analyzeSubject, initialSteps, inputHash } from "@/lib/agent";
 import { baths, money, num, pct } from "@/lib/format";
 import { composeLetter } from "@/lib/letter";
 import { useStore } from "@/lib/store";
 import type { AgentStep, Analysis, Draft, StepKey, StepStatus } from "@/lib/types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const CLIENT_TIMEOUT_MS = 40_000;
 
 type DraftMeta = { transport?: string; project?: string; location?: string; ms?: number; missing?: string[] };
+
+function letterLoaded(d: Draft | undefined): d is Draft {
+  return Boolean(d && d.letter);
+}
 
 export default function Workstation() {
   const { id } = useParams<{ id: string }>();
   const store = useStore();
   const subject = store.cases.find((c) => c.id === id);
-  const analysis: Analysis | null = useMemo(() => (subject ? analyzeSubject(subject) : null), [subject]);
+  const exclusions = useMemo(() => store.exclusions[id] ?? [], [store.exclusions, id]);
+  const analysis: Analysis | null = useMemo(() => (subject ? analyzeSubject(subject, exclusions) : null), [subject, exclusions]);
   const existing = store.drafts[id];
+  const currentHash = analysis ? inputHash(analysis) : "";
+  // A draft is only current if it was generated from exactly these subject facts and comparables.
+  const stale = Boolean(existing && letterLoaded(existing) && existing.inputHash !== currentHash);
 
   const [steps, setSteps] = useState<AgentStep[]>(() => (existing ? initialSteps().map((s) => ({ ...s, status: "done" as StepStatus })) : initialSteps()));
   const [running, setRunning] = useState(false);
@@ -98,16 +107,25 @@ export default function Workstation() {
         setLetter(text);
         setModel("deterministic");
         setStep("letter", { status: "done", ms: Date.now() - t5, detail: "Offline preview composed locally. Not a model draft." });
-        store.saveDraft({ caseId: subject.id, letter: text, letterModel: "deterministic", generatedAt: new Date().toISOString() });
+        store.saveDraft({ caseId: subject.id, letter: text, letterModel: "deterministic", generatedAt: new Date().toISOString(), inputHash: inputHash(a) });
         if (subject.status === "new") store.setCaseStatus(subject.id, "drafted");
         setRunning(false);
         return;
       }
 
       setStep("letter", { status: "running", detail: "Calling gemini-3.8-flash on Vertex AI with the adjusted comparables as JSON." });
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), CLIENT_TIMEOUT_MS);
       try {
-        const res = await fetch("/api/draft", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ analysis: a }) });
-        const j = await res.json();
+        let res: Response;
+        try {
+          // Excluded comparables are not in a.comps, so they never reach the model.
+          res = await fetch("/api/draft", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ analysis: a }), signal: ac.signal });
+        } catch (e) {
+          if (ac.signal.aborted) throw new Error(`No response from /api/draft after ${CLIENT_TIMEOUT_MS / 1000}s.`);
+          throw e;
+        }
+        const j = await res.json().catch(() => ({}));
         if (!res.ok || !j.letter) throw new Error(j.error || `HTTP ${res.status}`);
         setLetter(j.letter);
         setModel("gemini-3.8-flash");
@@ -118,13 +136,15 @@ export default function Workstation() {
           ms: Date.now() - t5,
           detail: `gemini-3.8-flash via ${where}.${j.missing?.length ? ` Check: letter omits ${j.missing.join(", ")}.` : " All comparables and figures cited."}`,
         });
-        store.saveDraft({ caseId: subject.id, letter: j.letter, letterModel: "gemini-3.8-flash", generatedAt: new Date().toISOString() });
+        store.saveDraft({ caseId: subject.id, letter: j.letter, letterModel: "gemini-3.8-flash", generatedAt: new Date().toISOString(), inputHash: inputHash(a) });
         if (subject.status === "new") store.setCaseStatus(subject.id, "drafted");
       } catch (e) {
+        // Nothing is saved on failure. The previous draft, if any, stays untouched in the store.
         const msg = e instanceof Error ? e.message : String(e);
         setError(msg);
         setStep("letter", { status: "error", ms: Date.now() - t5, detail: `Model call failed: ${msg}` });
       } finally {
+        clearTimeout(timer);
         setRunning(false);
       }
     },
@@ -146,8 +166,14 @@ export default function Workstation() {
     setLetter(v);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      if (subject && model) store.saveDraft({ caseId: subject.id, letter: v, letterModel: model, generatedAt: existing?.generatedAt ?? new Date().toISOString(), editedAt: new Date().toISOString() });
+      if (subject && model) store.saveDraft({ caseId: subject.id, letter: v, letterModel: model, generatedAt: existing?.generatedAt ?? new Date().toISOString(), editedAt: new Date().toISOString(), inputHash: existing?.inputHash });
     }, 400);
+  }
+
+  function toggleComp(compId: string, include: boolean) {
+    if (!subject) return;
+    const next = include ? exclusions.filter((x) => x !== compId) : [...exclusions, compId];
+    store.setExclusions(subject.id, next);
   }
 
   if (!store.hydrated) return null;
@@ -215,7 +241,7 @@ export default function Workstation() {
 
       <Card className="mt-5 overflow-hidden">
         <SectionTitle right={<span className="text-xs text-ink-500 tnum">{a.comps.length} sales · {a.searchRadiusMi.toFixed(1)} mi</span>}>Comparable sales</SectionTitle>
-        <CompsTable comps={a.comps} />
+        <CompsTable comps={a.comps} excluded={a.excluded} onToggle={toggleComp} disabled={running} minComps={MIN_COMPS} />
       </Card>
 
       <div className="mt-5 grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)]">
@@ -258,6 +284,14 @@ export default function Workstation() {
               Appeal letter
             </SectionTitle>
             <div className="border-b border-stone-200 px-4 py-2 text-xs text-ink-500 sm:hidden">{modelLabel}</div>
+            {stale && !running ? (
+              <div className="flex flex-wrap items-center gap-2 border-b border-stone-200 bg-stone-100 px-4 py-2 text-xs text-ink-700">
+                <span>Comparables or subject facts changed since this draft. It no longer matches the indication above.</span>
+                <Button variant="secondary" onClick={() => run(offline)} className="ml-auto">
+                  Redraft
+                </Button>
+              </div>
+            ) : null}
             {error ? (
               <div className="border-b border-rust-100 bg-rust-100/60 px-4 py-3 text-sm text-rust-700">
                 <div className="font-medium">The model call failed. No letter was substituted.</div>
