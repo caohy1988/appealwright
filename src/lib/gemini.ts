@@ -6,7 +6,8 @@ import { BOE_ADDRESS, LEGAL_FOOTER, compTable } from "./letter";
 import { dateLong, money } from "./format";
 
 export const MODEL_ID = "gemini-3.8-flash";
-export type Transport = "vertex-adc" | "gemini-api-key";
+// Vertex AI only. There is no AI Studio / API-key path.
+export type Transport = "vertex-adc" | "vertex-sa";
 
 const DEFAULT_PROJECT = "test-project-0728-467323";
 const DEFAULT_LOCATION = "global";
@@ -70,7 +71,8 @@ GROUNDS (restate each in your own words, one numbered paragraph each, keep every
 ${a.grounds.map((g, i) => `${i + 1}. ${g}`).join("\n")}
 
 REQUIREMENTS:
-- Sections: Re: block; salutation "Dear Members of the Board:"; opening paragraph stating assessed value, indicated value, and the request; 1. Subject property; 2. Comparable sales (table verbatim, then one short paragraph per comparable citing its street address, sale date, sale price, price per square foot, and adjusted price); 3. Indicated value; 4. Market trend; 5. Grounds; 6. Requested relief; closing.
+- Sections: Re: block; salutation "Dear Members of the Board:"; opening paragraph stating assessed value, indicated value, and the request; 1. Subject property; 2. Comparable sales (table verbatim, then one compact paragraph of two or three sentences per comparable); 3. Indicated value; 4. Market trend; 5. Grounds; 6. Requested relief; closing. Keep the whole letter under 900 words.
+- Each comparable paragraph must state, using the exact figures from the JSON: street address, sale date written out (for example ${dateLong(a.comps[0].saleDate)}), sale price, living area in square feet with thousands separators, price per square foot, every adjustment by name and signed dollar amount (for example "time +$19,500, living area −$28,000, baths +$3,100"), the net adjustment, and the adjusted price. Do not omit or round any of these figures.
 - Every comparable street address must appear in the letter.
 - The parcel number, assessed value ${money(s.assessedValue)}, and requested value ${money(a.indicatedValue)} must appear exactly.
 - If the recommendation is "hold" or "marginal", still write the letter but say candidly in section 6 that the evidence is limited and the firm recommends review before filing.
@@ -91,33 +93,79 @@ export const TIMEOUT_MS = 25_000;
 
 export class TimeoutError extends Error {}
 
+// Streams from Vertex so a long letter cannot trip a total-time cap. The 25s
+// AbortController fires only if no bytes arrive for 25s (connect, first token, or mid-stream).
 async function callGenerateContent(url: string, headers: Record<string, string>, body: unknown): Promise<string> {
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  const bump = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  };
+  const timeout = () => new TimeoutError(`${MODEL_ID} produced no output for ${TIMEOUT_MS / 1000}s and was aborted`);
   let res: Response;
   try {
     res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body), signal: ac.signal });
   } catch (e) {
-    if (ac.signal.aborted) throw new TimeoutError(`${MODEL_ID} timed out after ${TIMEOUT_MS / 1000}s`);
+    clearTimeout(timer);
+    if (ac.signal.aborted) throw timeout();
+    throw e;
+  }
+  if (!res.ok) {
+    clearTimeout(timer);
+    const raw = await res.text();
+    let msg = raw;
+    try {
+      msg = JSON.parse(raw)?.error?.message ?? raw;
+    } catch {}
+    throw new Error(`${MODEL_ID} returned HTTP ${res.status}: ${msg.slice(0, 400)}`);
+  }
+  if (!res.body) {
+    clearTimeout(timer);
+    throw new Error(`${MODEL_ID} returned an empty stream`);
+  }
+
+  let text = "";
+  let finish: string | undefined;
+  let blocked: string | undefined;
+  let buffer = "";
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const consume = (chunk: string) => {
+    buffer += chunk;
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (!payload) continue;
+      let j: { candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[]; promptFeedback?: { blockReason?: string } };
+      try {
+        j = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      const cand = j.candidates?.[0];
+      for (const p of cand?.content?.parts ?? []) text += p.text ?? "";
+      if (cand?.finishReason) finish = cand.finishReason;
+      if (j.promptFeedback?.blockReason) blocked = j.promptFeedback.blockReason;
+    }
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bump();
+      consume(decoder.decode(value, { stream: true }));
+    }
+    consume(decoder.decode());
+  } catch (e) {
+    if (ac.signal.aborted) throw timeout();
     throw e;
   } finally {
     clearTimeout(timer);
   }
-  const raw = await res.text();
-  if (!res.ok) {
-    let msg = raw;
-    try {
-      const j = JSON.parse(raw);
-      msg = j?.error?.message ?? raw;
-    } catch {}
-    throw new Error(`${MODEL_ID} returned HTTP ${res.status}: ${msg.slice(0, 400)}`);
-  }
-  const j = JSON.parse(raw);
-  const cand = j?.candidates?.[0];
-  const parts = cand?.content?.parts ?? [];
-  const text = parts.map((p: { text?: string }) => p.text ?? "").join("");
-  const finish = cand?.finishReason ?? j?.promptFeedback?.blockReason ?? "empty response";
-  if (!text.trim()) throw new Error(`${MODEL_ID} returned no text (${finish})`);
+  if (!text.trim()) throw new Error(`${MODEL_ID} returned no text (${blocked ?? finish ?? "empty response"})`);
   if (finish && finish !== "STOP") throw new Error(`${MODEL_ID} stopped early (${finish}); draft would be incomplete`);
   return text;
 }
@@ -134,31 +182,51 @@ export async function generateLetter(a: Analysis): Promise<GenerateResult> {
 
   const project = process.env.GOOGLE_CLOUD_PROJECT || DEFAULT_PROJECT;
   const location = process.env.GOOGLE_CLOUD_LOCATION || DEFAULT_LOCATION;
-  const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  const where = `Vertex AI (project ${project}, location ${location})`;
 
-  // Primary: Vertex AI with Application Default Credentials.
-  let adcError: string | null = null;
+  const { auth, transport } = buildAuth();
+  let token: string | null | undefined;
   try {
-    const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
     const client = await auth.getClient();
-    const token = await client.getAccessToken();
-    if (!token.token) throw new Error("ADC returned no access token");
-    const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
-    const url = `https://${host}/v1/projects/${project}/locations/${location}/publishers/google/models/${MODEL_ID}:generateContent`;
-    const text = await callGenerateContent(url, { authorization: `Bearer ${token.token}` }, body);
-    return { text, transport: "vertex-adc", project, location };
+    token = (await client.getAccessToken()).token;
   } catch (e) {
-    if (e instanceof TimeoutError) throw e; // do not spend another timeout on the fallback
-    adcError = e instanceof Error ? e.message : String(e);
-    // Fall through to the API key when credentials could not be obtained or the
-    // Vertex call itself failed. The caller sees the real error if the key path also fails.
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`${where}: could not obtain credentials (${transport}). ${msg}`);
   }
+  if (!token) throw new Error(`${where}: credentials (${transport}) returned no access token.`);
 
-  if (apiKey) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_ID}:generateContent`;
-    const text = await callGenerateContent(url, { "x-goog-api-key": apiKey }, body);
-    return { text, transport: "gemini-api-key" };
+  const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
+  const url = `https://${host}/v1/projects/${project}/locations/${location}/publishers/google/models/${MODEL_ID}:streamGenerateContent?alt=sse`;
+  try {
+    const text = await callGenerateContent(url, { authorization: `Bearer ${token}` }, body);
+    return { text, transport, project, location };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`${where}: ${msg}`);
   }
+}
 
-  throw new Error(`Vertex AI (${project}/${location}) failed: ${adcError}. No GOOGLE_GENERATIVE_AI_API_KEY fallback configured.`);
+type ServiceAccount = { client_email: string; private_key: string };
+
+// Credential order: explicit service-account env vars, then inline JSON in
+// GOOGLE_APPLICATION_CREDENTIALS, then Application Default Credentials (local gcloud).
+function buildAuth(): { auth: GoogleAuth; transport: Transport } {
+  const scopes = ["https://www.googleapis.com/auth/cloud-platform"];
+  const email = process.env.GOOGLE_CLIENT_EMAIL;
+  const key = process.env.GOOGLE_PRIVATE_KEY;
+  if (email && key) {
+    return { auth: new GoogleAuth({ credentials: { client_email: email, private_key: key.replace(/\\n/g, "\n") }, scopes }), transport: "vertex-sa" };
+  }
+  const gac = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+  if (gac && gac.startsWith("{")) {
+    let sa: ServiceAccount;
+    try {
+      sa = JSON.parse(gac) as ServiceAccount;
+    } catch {
+      throw new Error("GOOGLE_APPLICATION_CREDENTIALS is not valid JSON.");
+    }
+    if (!sa.client_email || !sa.private_key) throw new Error("GOOGLE_APPLICATION_CREDENTIALS JSON lacks client_email or private_key.");
+    return { auth: new GoogleAuth({ credentials: { client_email: sa.client_email, private_key: sa.private_key.replace(/\\n/g, "\n") }, scopes }), transport: "vertex-sa" };
+  }
+  return { auth: new GoogleAuth({ scopes }), transport: "vertex-adc" };
 }

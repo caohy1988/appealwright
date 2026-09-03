@@ -5,13 +5,14 @@ import type { Analysis } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 export async function GET() {
   return NextResponse.json({
     model: MODEL_ID,
     project: process.env.GOOGLE_CLOUD_PROJECT || "test-project-0728-467323",
     location: process.env.GOOGLE_CLOUD_LOCATION || "global",
-    apiKeyConfigured: Boolean(process.env.GOOGLE_GENERATIVE_AI_API_KEY),
+    transport: "vertex-ai",
   });
 }
 

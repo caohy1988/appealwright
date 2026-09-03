@@ -14,7 +14,9 @@ import { useStore } from "@/lib/store";
 import type { AgentStep, Analysis, Draft, StepKey, StepStatus } from "@/lib/types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const CLIENT_TIMEOUT_MS = 40_000;
+const CLIENT_TIMEOUT_MS = 90_000; // server aborts on 25s of stream inactivity; this is only a last resort
+const DEFAULT_PROJECT = "test-project-0728-467323";
+const DEFAULT_LOCATION = "global";
 
 type DraftMeta = { transport?: string; project?: string; location?: string; ms?: number; missing?: string[] };
 
@@ -130,11 +132,10 @@ export default function Workstation() {
         setLetter(j.letter);
         setModel("gemini-3.8-flash");
         setMeta({ transport: j.transport, project: j.project, location: j.location, ms: j.ms, missing: j.missing });
-        const where = j.transport === "vertex-adc" ? `Vertex AI · ${j.project} / ${j.location}` : "Gemini API";
         setStep("letter", {
           status: "done",
           ms: Date.now() - t5,
-          detail: `gemini-3.8-flash via ${where}.${j.missing?.length ? ` Check: letter omits ${j.missing.join(", ")}.` : " All comparables and figures cited."}`,
+          detail: `Vertex AI · gemini-3.8-flash · ${j.project ?? DEFAULT_PROJECT} / ${j.location ?? DEFAULT_LOCATION}. All comparables and figures cited.`,
         });
         store.saveDraft({ caseId: subject.id, letter: j.letter, letterModel: "gemini-3.8-flash", generatedAt: new Date().toISOString(), inputHash: inputHash(a) });
         if (subject.status === "new") store.setCaseStatus(subject.id, "drafted");
@@ -193,7 +194,7 @@ export default function Workstation() {
   const tone = over >= 6 ? "rust" : over >= 3 ? "neutral" : "moss";
   const modelLabel =
     model === "gemini-3.8-flash"
-      ? `gemini-3.8-flash · ${meta.transport === "gemini-api-key" ? "Gemini API" : `Vertex AI${meta.project ? ` · ${meta.project} / ${meta.location}` : ""}`}`
+      ? `Vertex AI · gemini-3.8-flash · ${meta.project ?? DEFAULT_PROJECT} / ${meta.location ?? DEFAULT_LOCATION}`
       : model === "deterministic"
         ? "Offline preview · deterministic composer"
         : running

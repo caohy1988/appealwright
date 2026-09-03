@@ -15,15 +15,17 @@ Open http://localhost:3000, click "Continue as Northshore Appeals".
 
 ## Environment
 
-The appeal letter is drafted live by `gemini-3.8-flash`. The server route `POST /api/draft` tries Vertex AI with Application Default Credentials first, then falls back to the Gemini API key. If both fail, the UI shows the error. The deterministic composer is only available behind the "Offline preview" toggle.
+The appeal letter is drafted live by `gemini-3.8-flash` on Vertex AI, and only Vertex AI. The server route `POST /api/draft` authenticates with a service account when one is configured, otherwise with Application Default Credentials. If the call fails, the UI shows the error. The deterministic composer is only available behind the "Offline preview" toggle.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `GOOGLE_CLOUD_PROJECT` | `test-project-0728-467323` | Vertex AI project |
 | `GOOGLE_CLOUD_LOCATION` | `global` | Vertex AI location |
-| `GOOGLE_GENERATIVE_AI_API_KEY` | unset | Gemini API fallback when ADC is unavailable (Vercel) |
+| `GOOGLE_CLIENT_EMAIL` | unset | Service-account email for hosted deploys (Vercel) |
+| `GOOGLE_PRIVATE_KEY` | unset | Service-account private key; `\n` escapes are accepted |
+| `GOOGLE_APPLICATION_CREDENTIALS` | unset | Alternative: inline service-account JSON, or a file path for ADC |
 
-Locally, `gcloud auth application-default login` is enough. On Vercel, set `GOOGLE_GENERATIVE_AI_API_KEY` or provide ADC via `GOOGLE_APPLICATION_CREDENTIALS`. Never commit keys.
+Locally, `gcloud auth application-default login` is enough. On Vercel, set `GOOGLE_CLIENT_EMAIL` and `GOOGLE_PRIVATE_KEY` for a service account with the Vertex AI User role. Never commit keys.
 
 ## Layout
 
