@@ -5,7 +5,8 @@
 - Next.js App Router, TypeScript, Tailwind CSS.
 - Geist Sans and Geist Mono via `next/font`.
 - No database. Seed data and the agent are in-process TypeScript. Client-side state persists to `localStorage` for the demo session (login, user-created cases, seat changes, letter edits).
-- Optional LLM polish: if `GOOGLE_GENERATIVE_AI_API_KEY` is present in the server environment, the letter is polished with `gemini-3.8-flash` via a route handler. Otherwise the deterministic composer output is used unchanged. The UI labels which path produced the letter.
+- **P0: live LLM letter.** The letter is written by `gemini-3.8-flash` through a server-only route handler `POST /api/draft`. Primary path is Vertex AI (project from `GOOGLE_CLOUD_PROJECT`, default `test-project-0728-467323`; location from `GOOGLE_CLOUD_LOCATION`, default `global`) using Application Default Credentials. If ADC is unavailable, the route uses `GOOGLE_GENERATIVE_AI_API_KEY` against the Gemini API. The prompt is grounded with the selected comps as JSON and the letter must cite them. If the model call fails, the UI shows the error. It never substitutes a deterministic letter as if it were Gemini. A deterministic composer exists only behind an explicit "Offline preview" toggle and is labelled as such. The UI labels the model and transport.
+- **P0: responsive.** Every page works at 375px and 1280px with no horizontal overflow. Tap targets are at least 44px. Comps render as a table at `md` and up and as stacked cards below. App chrome is a sidebar on desktop and a top bar with a drawer on mobile. The letter is readable on a phone and copy/print work there.
 - `npm run build` must pass. No secrets in git.
 
 ## Routes
@@ -88,7 +89,7 @@ In-process, deterministic, over a committed seed of 10 synthetic King County sal
 3. **adjust**: line adjustments per comp: size ($/sqft delta × sqft difference at 50% of neighborhood $/sqft), bath count ($12,500 per bath), age (0.4% per year of difference, capped), time (trend-adjusted to today), lot (small). Weight by distance and recency. Indicated value is weighted mean of adjusted prices, rounded to nearest $1,000.
 4. **trend**: monthly median $/sqft for the last 12 months across all seed sales, smoothed with a fixed drift so the sparkline is meaningful.
 5. **grounds**: pick applicable grounds from a fixed list based on data: comps indicate lower value; assessment exceeds 100% of market value under RCW 84.40.030; assessment inconsistent with trend; size or condition adjustments.
-6. **letter**: deterministic composer produces a formal letter to the King County Board of Equalization with parcel, assessed value, requested value, comp table in prose, adjustments, trend, grounds, and a closing. If Gemini key present, polish preserving all numbers.
+6. **letter**: `POST /api/draft` sends the analysis (subject, adjusted comps, trend, grounds, indicated value) as JSON to `gemini-3.8-flash` with a strict system prompt for a King County Board of Equalization petition cover letter. The response is checked for the requested value, assessed value, parcel, and every comp address before it is accepted. Offline preview uses the deterministic composer and is labelled "Offline preview".
 
 ## Letter requirements
 

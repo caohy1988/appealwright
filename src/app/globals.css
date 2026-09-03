@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink-950: #131311;
+  --color-ink-900: #1e1d1a;
+  --color-ink-700: #3f3d38;
+  --color-ink-500: #6b6862;
+  --color-ink-400: #8f8b83;
+  --color-stone-50: #fbfaf8;
+  --color-stone-100: #f4f2ee;
+  --color-stone-200: #e8e5df;
+  --color-stone-300: #d6d2ca;
+  --color-moss-100: #e3efe7;
+  --color-moss-600: #23603f;
+  --color-moss-700: #1b4d32;
+  --color-rust-100: #f6e4de;
+  --color-rust-600: #a8432b;
+  --color-rust-700: #8a3520;
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--color-stone-50);
+  color: var(--color-ink-950);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+  overflow-x: hidden;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+.letter-body {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+
+@media (max-width: 767px) {
+  .letter-body {
+    font-size: 12px;
+  }
+}
+
+#letter-print {
+  display: none;
+}
+
+@media print {
+  @page {
+    margin: 0.85in;
+  }
+  body {
+    background: #fff;
+  }
+  body > * {
+    display: none !important;
+  }
+  #letter-print {
+    display: block !important;
+    font-family: var(--font-mono);
+    font-size: 11pt;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: #000;
+  }
+}
