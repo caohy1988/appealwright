@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button, Card } from "@/components/ui";
 import { locateAddress } from "@/lib/agent";
+import { parseBaths, parseInteger, parseMoney, type ParseResult } from "@/lib/parse";
 import { useStore } from "@/lib/store";
 import type { Subject } from "@/lib/types";
 
@@ -11,14 +12,6 @@ const CITIES = ["Kirkland", "Bellevue", "Redmond", "Bothell", "Woodinville"];
 
 function slug(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 40);
-}
-// Strips commas, spaces, and currency symbols. Returns null when the field is blank or not a number.
-function parseNum(raw: string): number | null {
-  const t = raw.replace(/[$,\s]/g, "");
-  if (t === "") return null;
-  if (!/^\d+(\.\d+)?$/.test(t)) return null;
-  const n = Number(t);
-  return Number.isFinite(n) ? n : null;
 }
 function parcelFor(s: string) {
   let h = 5381;
@@ -47,19 +40,28 @@ export default function NewCase() {
   function submit(e: React.FormEvent) {
     e.preventDefault();
     if (address.trim().length < 5) return setErr("Enter a street address.");
-    const av = parseNum(assessed);
-    if (av === null || av < 50000) return setErr("Enter the assessed value from the valuation notice, for example 1,250,000.");
-    const opt: Record<string, number | null> = { sqft: parseNum(sqft), beds: parseNum(beds), baths: parseNum(baths), yearBuilt: parseNum(yearBuilt), lot: parseNum(lot) };
-    const labels: Record<string, string> = { sqft: "Living SF", beds: "Beds", baths: "Baths", yearBuilt: "Built", lot: "Lot SF" };
-    for (const [k, v] of Object.entries(opt)) {
-      if (v === null && ({ sqft, beds, baths, yearBuilt, lot } as Record<string, string>)[k].trim() !== "") return setErr(`${labels[k]} must be a number, or leave it blank.`);
+    const av = parseMoney(assessed);
+    if (!av.ok) return setErr(av.empty ? "Enter the assessed value from the valuation notice, for example 1,250,000." : `Assessed value ${av.reason}. Example: 1,250,000.`);
+    if (av.value < 50000) return setErr("Assessed value looks too low. Enter the full amount from the notice, for example 1,250,000.");
+
+    const fields: [string, ParseResult, string][] = [
+      ["Living SF", parseInteger(sqft), "2,100"],
+      ["Beds", parseInteger(beds), "3"],
+      ["Baths", parseBaths(baths), "2.5"],
+      ["Built", parseInteger(yearBuilt), "1988"],
+      ["Lot SF", parseInteger(lot), "7,500"],
+    ];
+    for (const [name, r, example] of fields) {
+      if (!r.ok && !r.empty) return setErr(`${name} ${r.reason}. Example: ${example}, or leave it blank.`);
     }
+    const val = (r: ParseResult) => (r.ok ? r.value : null);
+    const opt = { sqft: val(fields[0][1]), beds: val(fields[1][1]), baths: val(fields[2][1]), yearBuilt: val(fields[3][1]), lot: val(fields[4][1]) };
     if (opt.sqft !== null && (opt.sqft < 300 || opt.sqft > 20000)) return setErr("Living SF looks wrong. Enter square feet, for example 2,100.");
     if (opt.yearBuilt !== null && (opt.yearBuilt < 1850 || opt.yearBuilt > 2026)) return setErr("Built must be a four-digit year.");
     if (opt.beds !== null && (opt.beds < 1 || opt.beds > 12)) return setErr("Beds must be between 1 and 12.");
     if (opt.baths !== null && (opt.baths < 0.5 || opt.baths > 12)) return setErr("Baths must be between 0.5 and 12.");
     if (opt.lot !== null && (opt.lot < 500 || opt.lot > 2000000)) return setErr("Lot SF looks wrong. Enter square feet, for example 7,500.");
-    const factsAssumed = [sqft, beds, baths, yearBuilt, lot].some((v) => v.trim() === "");
+    const factsAssumed = fields.some(([, r]) => !r.ok && r.empty);
     const { lat, lng } = locateAddress(`${address} ${city}`);
     // Unique per creation so a re-entered address never inherits a stale draft.
     const id = `${slug(address)}-${Date.now().toString(36)}`;
@@ -69,7 +71,7 @@ export default function NewCase() {
       city,
       zip: city === "Kirkland" ? "98034" : city === "Redmond" ? "98052" : city === "Bellevue" ? "98004" : city === "Bothell" ? "98011" : "98072",
       parcel: parcelFor(address + city),
-      assessedValue: Math.round(av),
+      assessedValue: av.value,
       beds: opt.beds ?? 3,
       baths: opt.baths ?? 2,
       sqft: opt.sqft ?? 2000,
@@ -90,7 +92,7 @@ export default function NewCase() {
   return (
     <div className="mx-auto max-w-2xl">
       <h1 className="text-2xl font-semibold tracking-tight">New case</h1>
-      <p className="mt-1 text-sm text-ink-700">Address and assessed value are enough. Facts you leave blank are assumed and flagged on the workstation. Commas are fine.</p>
+      <p className="mt-1 text-sm text-ink-700">Address and assessed value are enough. Facts you leave blank are assumed and flagged on the workstation. Commas are fine; whole numbers only, except baths.</p>
       <Card className="mt-6 p-4 md:p-6">
         <form onSubmit={submit} className="grid gap-4" noValidate>
           <div className="grid gap-4 sm:grid-cols-[1fr_160px]">
@@ -122,7 +124,7 @@ export default function NewCase() {
             {[
               ["sqft", "Living SF", sqft, setSqft, "2,100"],
               ["beds", "Beds", beds, setBeds, "3"],
-              ["baths", "Baths", baths, setBaths, "2.5"],
+              ["baths", "Baths", baths, setBaths, "0.5 or 2.5"],
               ["year", "Built", yearBuilt, setYearBuilt, "1988"],
               ["lot", "Lot SF", lot, setLot, "7,500"],
             ].map(([id, l, v, set, ph]) => (

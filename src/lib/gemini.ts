@@ -64,16 +64,15 @@ Recommendation: ${a.recommendation}.
 COMPARABLE SALES (JSON, adjustments are relative to the subject, negative means the comp is superior):
 ${JSON.stringify(compsJson, null, 2)}
 
-COMPARABLE TABLE (include this block verbatim as section 2, keep the alignment):
+COMPARABLE SALES SUMMARY (for your reference; the firm's system appends the aligned comparable table and one evidence paragraph per sale to section 2 after you write it, so do not reproduce them):
 ${compTable(a)}
 
 GROUNDS (restate each in your own words, one numbered paragraph each, keep every number):
 ${a.grounds.map((g, i) => `${i + 1}. ${g}`).join("\n")}
 
 REQUIREMENTS:
-- Sections: Re: block; salutation "Dear Members of the Board:"; opening paragraph stating assessed value, indicated value, and the request; 1. Subject property; 2. Comparable sales (table verbatim, then one compact paragraph of two or three sentences per comparable); 3. Indicated value; 4. Market trend; 5. Grounds; 6. Requested relief; closing. Keep the whole letter under 900 words.
-- Each comparable paragraph must state, using the exact figures from the JSON: street address, sale date written out (for example ${dateLong(a.comps[0].saleDate)}), sale price, living area in square feet with thousands separators, price per square foot, every adjustment by name and signed dollar amount (for example "time +$19,500, living area −$28,000, baths +$3,100"), the net adjustment, and the adjusted price. Do not omit or round any of these figures.
-- Every comparable street address must appear in the letter.
+- Sections: Re: block; salutation "Dear Members of the Board:"; opening paragraph stating assessed value, indicated value, and the request; 1. Subject property; 2. Comparable sales (one paragraph only: how many sales, radius, months, what was adjusted; then stop); 3. Indicated value; 4. Market trend; 5. Grounds; 6. Requested relief; closing. Keep the whole letter under 550 words.
+- Do not write per-comparable paragraphs, do not list individual sale prices or adjustments, and do not mention any comparable's street address anywhere. The system inserts that evidence verbatim.
 - The parcel number, assessed value ${money(s.assessedValue)}, and requested value ${money(a.indicatedValue)} must appear exactly.
 - If the recommendation is "hold" or "marginal", still write the letter but say candidly in section 6 that the evidence is limited and the firm recommends review before filing.
 - Sign as:
@@ -87,32 +86,34 @@ ${LEGAL_FOOTER}
   return { system, user };
 }
 
-type GenerateResult = { text: string; transport: Transport; project?: string; location?: string };
+export type GenerateResult = { text: string; transport: Transport; project?: string; location?: string };
 
 export const TIMEOUT_MS = 25_000;
 
 export class TimeoutError extends Error {}
 
-// Streams from Vertex so a long letter cannot trip a total-time cap. The 25s
-// AbortController fires only if no bytes arrive for 25s (connect, first token, or mid-stream).
-async function callGenerateContent(url: string, headers: Record<string, string>, body: unknown): Promise<string> {
-  const ac = new AbortController();
-  let timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
-  const bump = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
-  };
-  const timeout = () => new TimeoutError(`${MODEL_ID} produced no output for ${TIMEOUT_MS / 1000}s and was aborted`);
-  let res: Response;
-  try {
-    res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body), signal: ac.signal });
-  } catch (e) {
-    clearTimeout(timer);
-    if (ac.signal.aborted) throw timeout();
-    throw e;
-  }
+export type GenerateOptions = {
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+  // Test seam. Production always obtains the token through buildAuth.
+  getToken?: (signal: AbortSignal) => Promise<string>;
+};
+
+function raceAbort<T>(p: Promise<T>, signal: AbortSignal, onAbort: () => Error): Promise<T> {
+  if (signal.aborted) return Promise.reject(onAbort());
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(onAbort());
+    signal.addEventListener("abort", abort, { once: true });
+    p.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
+type StreamChunk = { candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[]; promptFeedback?: { blockReason?: string } };
+
+// Streams the letter. The caller's signal is honoured through connect, body, and parse.
+async function callGenerateContent(url: string, headers: Record<string, string>, body: unknown, signal: AbortSignal, fetchImpl: typeof fetch): Promise<string> {
+  const res = await fetchImpl(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body), signal });
   if (!res.ok) {
-    clearTimeout(timer);
     const raw = await res.text();
     let msg = raw;
     try {
@@ -120,17 +121,12 @@ async function callGenerateContent(url: string, headers: Record<string, string>,
     } catch {}
     throw new Error(`${MODEL_ID} returned HTTP ${res.status}: ${msg.slice(0, 400)}`);
   }
-  if (!res.body) {
-    clearTimeout(timer);
-    throw new Error(`${MODEL_ID} returned an empty stream`);
-  }
+  if (!res.body) throw new Error(`${MODEL_ID} returned an empty stream`);
 
   let text = "";
   let finish: string | undefined;
   let blocked: string | undefined;
   let buffer = "";
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
   const consume = (chunk: string) => {
     buffer += chunk;
     const lines = buffer.split("\n");
@@ -139,7 +135,7 @@ async function callGenerateContent(url: string, headers: Record<string, string>,
       if (!line.startsWith("data:")) continue;
       const payload = line.slice(5).trim();
       if (!payload) continue;
-      let j: { candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[]; promptFeedback?: { blockReason?: string } };
+      let j: StreamChunk;
       try {
         j = JSON.parse(payload);
       } catch {
@@ -151,26 +147,27 @@ async function callGenerateContent(url: string, headers: Record<string, string>,
       if (j.promptFeedback?.blockReason) blocked = j.promptFeedback.blockReason;
     }
   };
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      bump();
-      consume(decoder.decode(value, { stream: true }));
-    }
-    consume(decoder.decode());
-  } catch (e) {
-    if (ac.signal.aborted) throw timeout();
-    throw e;
-  } finally {
-    clearTimeout(timer);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  for (;;) {
+    if (signal.aborted) throw new Error("aborted");
+    const { done, value } = await reader.read();
+    if (done) break;
+    consume(decoder.decode(value, { stream: true }));
   }
+  consume(decoder.decode());
   if (!text.trim()) throw new Error(`${MODEL_ID} returned no text (${blocked ?? finish ?? "empty response"})`);
   if (finish && finish !== "STOP") throw new Error(`${MODEL_ID} stopped early (${finish}); draft would be incomplete`);
   return text;
 }
 
-export async function generateLetter(a: Analysis): Promise<GenerateResult> {
+// One deadline for the whole call: credentials, connection, streaming, and parsing.
+export async function generateLetter(a: Analysis, opts: GenerateOptions = {}): Promise<GenerateResult> {
+  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const project = process.env.GOOGLE_CLOUD_PROJECT || DEFAULT_PROJECT;
+  const location = process.env.GOOGLE_CLOUD_LOCATION || DEFAULT_LOCATION;
+  const where = `Vertex AI (project ${project}, location ${location})`;
   const { system, user } = buildPrompt(a);
   const body = {
     systemInstruction: { parts: [{ text: system }] },
@@ -180,36 +177,47 @@ export async function generateLetter(a: Analysis): Promise<GenerateResult> {
     generationConfig: { temperature: 0.3, maxOutputTokens: 16384, thinkingConfig: { thinkingLevel: "low" } },
   };
 
-  const project = process.env.GOOGLE_CLOUD_PROJECT || DEFAULT_PROJECT;
-  const location = process.env.GOOGLE_CLOUD_LOCATION || DEFAULT_LOCATION;
-  const where = `Vertex AI (project ${project}, location ${location})`;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  const timeout = () => new TimeoutError(`${where}: ${MODEL_ID} did not finish within ${timeoutMs / 1000}s. The deadline covers credentials, connection, streaming, and parsing.`);
 
-  let auth: GoogleAuth;
-  let transport: Transport;
+  let transport: Transport = "vertex-adc";
   try {
-    ({ auth, transport } = buildAuth());
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`${where}: ${msg}`);
-  }
-  let token: string | null | undefined;
-  try {
-    const client = await auth.getClient();
-    token = (await client.getAccessToken()).token;
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`${where}: could not obtain credentials (${transport}). ${msg}`);
-  }
-  if (!token) throw new Error(`${where}: credentials (${transport}) returned no access token.`);
+    let token: string;
+    if (opts.getToken) {
+      token = await raceAbort(opts.getToken(ac.signal), ac.signal, timeout);
+    } else {
+      let auth: GoogleAuth;
+      try {
+        ({ auth, transport } = buildAuth());
+      } catch (e) {
+        throw new Error(`${where}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      try {
+        const client = await raceAbort(auth.getClient(), ac.signal, timeout);
+        const t = (await raceAbort(client.getAccessToken(), ac.signal, timeout)).token;
+        if (!t) throw new Error(`credentials (${transport}) returned no access token.`);
+        token = t;
+      } catch (e) {
+        if (e instanceof TimeoutError) throw e;
+        throw new Error(`${where}: could not obtain credentials (${transport}). ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
 
-  const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
-  const url = `https://${host}/v1/projects/${project}/locations/${location}/publishers/google/models/${MODEL_ID}:streamGenerateContent?alt=sse`;
-  try {
-    const text = await callGenerateContent(url, { authorization: `Bearer ${token}` }, body);
-    return { text, transport, project, location };
+    const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
+    const url = `https://${host}/v1/projects/${project}/locations/${location}/publishers/google/models/${MODEL_ID}:streamGenerateContent?alt=sse`;
+    try {
+      const text = await callGenerateContent(url, { authorization: `Bearer ${token}` }, body, ac.signal, fetchImpl);
+      return { text, transport, project, location };
+    } catch (e) {
+      if (ac.signal.aborted) throw timeout();
+      throw new Error(`${where}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`${where}: ${msg}`);
+    if (ac.signal.aborted && !(e instanceof TimeoutError)) throw timeout();
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

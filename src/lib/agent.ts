@@ -168,11 +168,20 @@ export function inputHash(a: Analysis): string {
   return h.toString(16);
 }
 
+// Drafts are bound to the inputs they were generated from. A draft with no hash predates
+// hashing and is treated as stale once; it is never silently migrated.
+export function isDraftStale(draft: { inputHash?: string } | undefined, currentHash: string): boolean {
+  return Boolean(draft) && draft!.inputHash !== currentHash;
+}
+
 export function analyzeSubject(subject: Subject, excludeIds: string[] = []): Analysis {
   const { comps: selected, radius } = selectComps(subject);
   const excludedSet = new Set(excludeIds);
   let comps = selected.filter((c) => !excludedSet.has(c.id));
-  if (comps.length < MIN_COMPS) comps = selected; // never analyze on fewer than MIN_COMPS
+  if (comps.length < MIN_COMPS) {
+    console.warn(`analyzeSubject(${subject.id}): exclusions leave ${comps.length} comparable(s), below the minimum of ${MIN_COMPS}; using all ${selected.length} selected sales`);
+    comps = selected;
+  }
   const { adjusted, neighborhoodPpsf } = adjustComps(subject, comps);
   const excludedAdjusted = comps === selected ? [] : adjustComps(subject, selected.filter((c) => excludedSet.has(c.id))).adjusted;
   const { trend, trendPct } = computeTrend(neighborhoodPpsf);
