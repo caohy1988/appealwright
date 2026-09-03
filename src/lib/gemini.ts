@@ -184,7 +184,14 @@ export async function generateLetter(a: Analysis): Promise<GenerateResult> {
   const location = process.env.GOOGLE_CLOUD_LOCATION || DEFAULT_LOCATION;
   const where = `Vertex AI (project ${project}, location ${location})`;
 
-  const { auth, transport } = buildAuth();
+  let auth: GoogleAuth;
+  let transport: Transport;
+  try {
+    ({ auth, transport } = buildAuth());
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`${where}: ${msg}`);
+  }
   let token: string | null | undefined;
   try {
     const client = await auth.getClient();
