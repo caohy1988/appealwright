@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { MODEL_ID, TimeoutError, generateLetter } from "@/lib/gemini";
-import { injectEvidence, validateLetter } from "@/lib/letter";
+import { groundLetter } from "@/lib/letter";
 import type { Analysis } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -32,8 +32,7 @@ export async function POST(req: Request) {
   try {
     const result = await generateLetter(analysis);
     // The evidence table is written by the server, never by the model.
-    const letter = injectEvidence(result.text, analysis);
-    const missing = validateLetter(letter, analysis);
+    const { letter, missing } = groundLetter(result.text, analysis);
     if (missing.length > 0) {
       return NextResponse.json(
         {

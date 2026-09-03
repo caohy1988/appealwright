@@ -130,18 +130,18 @@ function compRequirements(c: AdjustedComp): Requirement[] {
 
 type CompStatus = { valid: boolean; missing: string[]; contradictions: string[] };
 
-function moneyTokens(block: string): string[] {
-  return block.match(/\$\d{1,3}(?:,\d{3})*(?!\d)/g) ?? [];
-}
+// Dollar tokens with their sign, if one is attached: "+$19,500", "- $28,000", "$1,318,000".
+const MONEY_TOKEN = /(?:([+-])\s?)?\$\d{1,3}(?:,\d{3})*(?!\d)/g;
 
-// Per-comp check. A comparable is cited correctly when one paragraph or one table row names it
-// alone and carries every one of its figures, signs included. Any block that names it alone but
-// states a dollar figure that is not one of its figures (or a document-wide value) is a contradiction.
+// Per-comp check. A comparable is valid only when (a) one paragraph or table row names it alone
+// and carries every one of its figures with the correct signs, and (b) no block that names it
+// alone contradicts it: an opposite-signed adjustment or net, or a dollar figure that is neither
+// one of this comparable's figures nor a document-wide value. Signs are never discarded.
 function compStatus(blocks: string[], c: AdjustedComp, others: string[], allowedDoc: Set<string>): CompStatus {
   const candidates = blocks.filter((b) => b.includes(c.address) && !others.some((o) => b.includes(o)));
   if (candidates.length === 0) return { valid: false, missing: ["no paragraph or row cites it on its own"], contradictions: [] };
   const reqs = compRequirements(c);
-  const allowed = new Set<string>([
+  const unsigned = new Set<string>([
     ...allowedDoc,
     money(c.salePrice),
     money(c.pricePerSqft),
@@ -151,14 +151,44 @@ function compStatus(blocks: string[], c: AdjustedComp, others: string[], allowed
     money(Math.abs(c.netAdjustment)),
     ...c.adjustments.map((x) => money(Math.abs(x.amount))),
   ]);
+  const signed = new Set<string>([c.netAdjustment, ...c.adjustments.map((x) => x.amount)].filter((n) => n !== 0).map((n) => normalize(moneySigned(n))));
   const contradictions: string[] = [];
   let best: string[] | null = null;
   for (const b of candidates) {
     const miss = reqs.filter((r) => !r.any.some((t) => b.includes(t))).map((r) => r.label);
     if (best === null || miss.length < best.length) best = miss;
-    for (const t of moneyTokens(b)) if (!allowed.has(t)) contradictions.push(t);
+    for (const m of b.matchAll(MONEY_TOKEN)) {
+      const sign = m[1];
+      const amount = m[0].slice(m[0].indexOf("$"));
+      if (sign) {
+        if (!signed.has(`${sign}${amount}`)) contradictions.push(`${sign}${amount}`);
+      } else if (!unsigned.has(amount)) {
+        contradictions.push(amount);
+      }
+    }
   }
   return { valid: best!.length === 0 && contradictions.length === 0, missing: best!, contradictions: [...new Set(contradictions)] };
+}
+
+// Blocks that present themselves as comparable evidence ("Sale 6: …", "Comparable 7 …", or a
+// numbered table row with dollar figures) but do not belong to the selected set.
+function inventedComps(text: string, a: Analysis): string[] {
+  const addresses = a.comps.map((c) => c.address);
+  const namesSelected = (b: string) => addresses.some((x) => b.includes(x));
+  const out: string[] = [];
+  for (const b of splitBlocks(text)) {
+    const m = /^(?:sale|comparable|comp)\s+(\d{1,2})\b/i.exec(b);
+    if (m) {
+      const n = Number(m[1]);
+      if (n > a.comps.length) out.push(`"${b.slice(0, 48)}…" refers to comparable ${n}, but only ${a.comps.length} were selected`);
+      else if (/\$\d/.test(b) && !namesSelected(b)) out.push(`"${b.slice(0, 48)}…" states figures for a comparable that is not among the selected sales`);
+      continue;
+    }
+    if (/^\d{1,2} \S/.test(b) && /\$\d/.test(b) && !namesSelected(b)) {
+      out.push(`table row "${b.slice(0, 48)}…" is not one of the selected sales`);
+    }
+  }
+  return [...new Set(out)];
 }
 
 function splitBlocks(text: string): string[] {
@@ -187,8 +217,17 @@ export function validateLetter(text: string, a: Analysis): string[] {
     if (st.missing.length > 0) missing.push(`comp ${c.address}: no single paragraph or row also states ${st.missing.join(", ")}`);
     if (st.contradictions.length > 0) missing.push(`comp ${c.address}: a paragraph states ${st.contradictions.join(", ")}, which is not that comparable's figure`);
   }
+  missing.push(...inventedComps(text, a));
   if (!/84\.40\.030/.test(doc)) missing.push("RCW 84.40.030");
   return missing;
+}
+
+// The production pipeline: server-written evidence first, then validation of the result.
+// Injection only adds what is missing; it never removes a wrong statement, so a letter that
+// mis-states a comparable still fails here.
+export function groundLetter(text: string, a: Analysis): { letter: string; missing: string[] } {
+  const letter = injectEvidence(text, a);
+  return { letter, missing: validateLetter(letter, a) };
 }
 
 // The evidence is written by the server, never by the model. Guarantees the aligned comparable

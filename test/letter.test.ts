@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SUBJECTS } from "../src/lib/seed";
 import { analyzeSubject } from "../src/lib/agent";
-import { compTable, composeLetter, injectEvidence, validateLetter } from "../src/lib/letter";
+import { compTable, composeLetter, groundLetter, injectEvidence, validateLetter } from "../src/lib/letter";
 import { money, moneySigned } from "../src/lib/format";
 
 const juanita = analyzeSubject(SUBJECTS[0]);
@@ -98,4 +98,60 @@ test("a model paragraph that mis-states a comp's figure is a contradiction even 
   const wrong = composeLetter(juanita) + `\n\nComparable 1 at ${c.address} sold for $1,111,111, well under the assessment.\n`;
   const missing = validateLetter(injectEvidence(wrong, juanita), juanita);
   assert.ok(missing.some((m) => m.includes(c.address) && m.includes("$1,111,111")), String(missing));
+});
+
+// Production pipeline: injectEvidence, then validateLetter. Injection must never launder a wrong letter.
+
+test("pipeline: sign-flipped composer letter still fails after injectEvidence", () => {
+  const letter = composeLetter(juanita);
+  const flipped = letter.split(`${MINUS}$`).join("+$");
+  assert.notEqual(flipped, letter);
+  const { letter: out, missing } = groundLetter(flipped, juanita);
+  assert.ok(missing.length > 0, "flipped letter must 422");
+  const neg = juanita.comps.flatMap((c) => c.adjustments).find((x) => x.amount < 0)!;
+  const flippedForm = `+${money(Math.abs(neg.amount))}`;
+  assert.ok(missing.some((m) => m.includes(flippedForm) || m.includes(moneySigned(neg.amount))), `mentions ${flippedForm}: ${missing}`);
+  assert.ok(missing.some((m) => juanita.comps.some((c) => m.includes(c.address))), "mentions a comp");
+  assert.ok(out.includes(`living area ${MINUS}$28,000`) || out.includes("+$28,000"), "output examined");
+});
+
+test("pipeline: swapped sale prices still fail after injectEvidence", () => {
+  const [c1, c2] = juanita.comps;
+  const p1 = money(c1.salePrice);
+  const p2 = money(c2.salePrice);
+  const swapped = composeLetter(juanita).split(p1).join("__SWAP__").split(p2).join(p1).split("__SWAP__").join(p2);
+  const { missing } = groundLetter(swapped, juanita);
+  assert.ok(missing.length > 0, "swapped letter must 422");
+  assert.ok(missing.some((m) => m.includes(c1.address)), `mentions ${c1.address}: ${missing}`);
+  assert.ok(missing.some((m) => m.includes(c2.address)), `mentions ${c2.address}: ${missing}`);
+});
+
+test("pipeline: an invented extra comparable still fails after injectEvidence", () => {
+  const n = juanita.comps.length + 1;
+  const invented = composeLetter(juanita) + `\n\nSale ${n}: 999 Imaginary Ave, Kirkland, sold March 1, 2026 for $500,000 (2,000 sq ft, $250 per sq ft). Adjusted price $510,000.\n`;
+  const { missing } = groundLetter(invented, juanita);
+  assert.ok(missing.length > 0, "invented comp must 422");
+  assert.ok(missing.some((m) => /comparable 6|not among the selected/.test(m)), String(missing));
+
+  const row = composeLetter(juanita).replace("\n\n3. Indicated value", `\n6  999 Imaginary Ave, Kirkland  March 1, 2026  $500,000  2,000  $250  +$10,000  $510,000\n\n3. Indicated value`);
+  const rowResult = groundLetter(row, juanita);
+  assert.ok(rowResult.missing.some((m) => /not one of the selected sales|comparable 6/.test(m)), String(rowResult.missing));
+});
+
+test("pipeline: composer letters of every seeded subject pass after injectEvidence, unchanged", () => {
+  for (const s of SUBJECTS) {
+    const a = analyzeSubject(s);
+    const letter = composeLetter(a);
+    const { letter: out, missing } = groundLetter(letter, a);
+    assert.equal(out, letter, `${s.id} untouched`);
+    assert.deepEqual(missing, [], s.id);
+  }
+});
+
+test("pipeline: a model paragraph stating a real comp's figure with the opposite sign is a contradiction", () => {
+  const c = juanita.comps[0];
+  const adj = c.adjustments.find((x) => x.amount < 0)!;
+  const wrongSign = composeLetter(juanita) + `\n\nComparable 1 at ${c.address} carried a ${adj.label.toLowerCase()} adjustment of +${money(Math.abs(adj.amount))}.\n`;
+  const { missing } = groundLetter(wrongSign, juanita);
+  assert.ok(missing.some((m) => m.includes(c.address) && m.includes(`+${money(Math.abs(adj.amount))}`)), String(missing));
 });
