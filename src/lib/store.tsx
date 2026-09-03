@@ -1,7 +1,8 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { ORG, PLANS, SUBJECTS } from "./seed";
+import { ORG, SUBJECTS } from "./seed";
+import { applyInvite, applyMemberStatus, applyPlan } from "./seats";
 import type { CaseStatus, Draft, Member, Org, PlanId, Subject } from "./types";
 
 const KEY = "appealwright.v1";
@@ -44,6 +45,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<Persisted>(initial);
   const [hydrated, setHydrated] = useState(false);
   const skipWrite = useRef(true);
+  // Latest state for callbacks that must decide a result before calling setState.
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   useEffect(() => {
     try {
@@ -93,47 +99,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
-  const invite = useCallback(
-    (email: string) => {
-      const e = email.trim().toLowerCase();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return { ok: false, message: "Enter a valid email address." };
-      let result = { ok: true } as { ok: boolean; message?: string };
-      setState((s) => {
-        const plan = PLANS.find((p) => p.id === s.org.plan)!;
-        const used = s.org.members.filter((m) => m.status !== "inactive").length;
-        if (s.org.members.some((m) => m.email === e)) {
-          result = { ok: false, message: "That person is already on the team." };
-          return s;
-        }
-        if (used >= plan.seats) {
-          result = { ok: false, message: `All ${plan.seats} seats on ${plan.name} are in use. Deactivate a member or upgrade.` };
-          return s;
-        }
-        const name = e.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-        const m: Member = { id: `m${Date.now()}`, name, email: e, role: "analyst", status: "pending", joinedAt: new Date().toISOString().slice(0, 10) };
-        return { ...s, org: { ...s.org, members: [...s.org.members, m] } };
-      });
-      return result;
-    },
-    [],
-  );
+  const invite = useCallback((email: string) => {
+    const r = applyInvite(stateRef.current.org, email);
+    if (r.ok) setState((s) => ({ ...s, org: r.org }));
+    return r.ok ? { ok: true } : { ok: false, message: r.message };
+  }, []);
 
   const setMemberStatus = useCallback((id: string, status: Member["status"]) => {
-    let result = { ok: true } as { ok: boolean; message?: string };
-    setState((s) => {
-      const target = s.org.members.find((m) => m.id === id);
-      if (!target) return s;
-      if (status !== "inactive" && target.status === "inactive") {
-        const plan = PLANS.find((p) => p.id === s.org.plan)!;
-        const used = s.org.members.filter((m) => m.status !== "inactive").length;
-        if (used >= plan.seats) {
-          result = { ok: false, message: `All ${plan.seats} seats on ${plan.name} are in use. Deactivate someone else or upgrade before reactivating ${target.name}.` };
-          return s;
-        }
-      }
-      return { ...s, org: { ...s.org, members: s.org.members.map((m) => (m.id === id ? { ...m, status } : m)) } };
-    });
-    return result;
+    const r = applyMemberStatus(stateRef.current.org, id, status);
+    if (r.ok) setState((s) => ({ ...s, org: r.org }));
+    return r.ok ? { ok: true } : { ok: false, message: r.message };
   }, []);
 
   const setExclusions = useCallback(
@@ -142,17 +117,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   );
 
   const setPlan = useCallback((plan: PlanId) => {
-    let result = { ok: true } as { ok: boolean; message?: string };
-    setState((s) => {
-      const target = PLANS.find((p) => p.id === plan)!;
-      const used = s.org.members.filter((m) => m.status !== "inactive").length;
-      if (used > target.seats) {
-        result = { ok: false, message: `${target.name} has ${target.seats} seats but ${used} are in use. Deactivate ${used - target.seats} first.` };
-        return s;
-      }
-      return { ...s, org: { ...s.org, plan } };
-    });
-    return result;
+    const r = applyPlan(stateRef.current.org, plan);
+    if (r.ok) setState((s) => ({ ...s, org: r.org }));
+    return r.ok ? { ok: true } : { ok: false, message: r.message };
   }, []);
 
   const reset = useCallback(() => {

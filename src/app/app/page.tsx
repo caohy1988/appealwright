@@ -129,7 +129,7 @@ export default function Cases() {
           ))}
         </ul>
       </Card>
-      <p className="mt-3 text-xs text-ink-500">Subjects and comparables are synthetic demo records. Gap is assessed value over indicated value.</p>
+      <p className="mt-3 text-xs text-ink-500">Subjects and comparables are synthetic demo records. Gap is assessed value over indicated value. Cases you add live in this browser only.</p>
     </div>
   );
 }

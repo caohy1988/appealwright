@@ -36,13 +36,19 @@ export default function Seats() {
           <Card>
             <SectionTitle right={<span className="text-xs text-ink-500 tnum">{used} of {plan.seats} seats</span>}>Team</SectionTitle>
             <div className="px-4 pt-4">
-              <div className="h-2 w-full overflow-hidden rounded bg-stone-200">
+              <div className="h-2 w-full overflow-hidden rounded bg-stone-200" role="meter" aria-valuemin={0} aria-valuemax={plan.seats} aria-valuenow={used} aria-label="Seats in use">
                 <div className="h-full bg-ink-950" style={{ width: `${Math.min(100, (used / plan.seats) * 100)}%` }} />
+              </div>
+              <div className="mt-1.5 flex justify-between text-xs text-ink-700 tnum">
+                <span>
+                  {used} of {plan.seats} seats in use
+                </span>
+                <span className="text-ink-500">{Math.max(0, plan.seats - used)} open</span>
               </div>
             </div>
             <ul className="mt-2 divide-y divide-stone-200">
               {members.map((m) => (
-                <li key={m.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+                <li key={m.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:flex-nowrap">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className={`truncate text-sm font-medium ${m.status === "inactive" ? "text-ink-400 line-through" : ""}`}>{m.name}</span>
@@ -80,8 +86,12 @@ export default function Seats() {
                 </li>
               ))}
             </ul>
-            <form onSubmit={invite} className="flex flex-col gap-2 border-t border-stone-200 p-4 sm:flex-row" noValidate>
+            <form onSubmit={invite} className="flex flex-col gap-2 border-t border-stone-200 p-4 sm:flex-row sm:items-center" noValidate>
+              <label htmlFor="invite-email" className="text-xs font-medium text-ink-700 sm:sr-only">
+                Invite by email
+              </label>
               <input
+                id="invite-email"
                 type="email"
                 inputMode="email"
                 autoComplete="off"
@@ -91,7 +101,9 @@ export default function Seats() {
                 aria-label="Email to invite"
                 className="min-h-11 flex-1 rounded-md border border-stone-300 bg-white px-3 text-base focus:border-ink-950 focus:outline-none md:text-sm"
               />
-              <Button type="submit">Invite</Button>
+              <Button type="submit" className="sm:shrink-0">
+                Invite
+              </Button>
             </form>
             {msg ? <div className={`border-t border-stone-200 px-4 py-2 text-xs ${msg.ok ? "text-moss-700" : "text-rust-700"}`}>{msg.text}</div> : null}
           </Card>
@@ -116,7 +128,7 @@ export default function Seats() {
             <SectionTitle>Switch plan</SectionTitle>
             <ul className="divide-y divide-stone-200">
               {PLANS.map((p) => (
-                <li key={p.id} className="flex items-center justify-between gap-3 px-4 py-3">
+                <li key={p.id} className="flex min-h-14 items-center justify-between gap-3 px-4 py-3">
                   <div>
                     <div className="text-sm font-medium">{p.name}</div>
                     <div className="text-xs text-ink-500 tnum">
