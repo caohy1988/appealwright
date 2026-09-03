@@ -158,15 +158,30 @@ export function buildGrounds(subject: Subject, adjusted: AdjustedComp[], indicat
   return { grounds, recommendation };
 }
 
-export function analyzeSubject(subject: Subject): Analysis {
-  const { comps, radius } = selectComps(subject);
+export const MIN_COMPS = 2;
+
+export function inputHash(a: Analysis): string {
+  const s = a.subject;
+  const key = JSON.stringify([s.address, s.assessedValue, s.sqft, s.beds, s.baths, s.yearBuilt, s.lotSqft, s.lat, s.lng, a.comps.map((c) => c.id).sort()]);
+  let h = 5381;
+  for (const ch of key) h = ((h << 5) + h + ch.charCodeAt(0)) >>> 0;
+  return h.toString(16);
+}
+
+export function analyzeSubject(subject: Subject, excludeIds: string[] = []): Analysis {
+  const { comps: selected, radius } = selectComps(subject);
+  const excludedSet = new Set(excludeIds);
+  let comps = selected.filter((c) => !excludedSet.has(c.id));
+  if (comps.length < MIN_COMPS) comps = selected; // never analyze on fewer than MIN_COMPS
   const { adjusted, neighborhoodPpsf } = adjustComps(subject, comps);
+  const excludedAdjusted = comps === selected ? [] : adjustComps(subject, selected.filter((c) => excludedSet.has(c.id))).adjusted;
   const { trend, trendPct } = computeTrend(neighborhoodPpsf);
   const indicated = indicatedValue(adjusted);
   const { grounds, recommendation } = buildGrounds(subject, adjusted, indicated, neighborhoodPpsf, trendPct);
   return {
     subject,
     comps: adjusted,
+    excluded: excludedAdjusted,
     searchRadiusMi: radius,
     neighborhoodPpsf,
     trend,

@@ -87,8 +87,22 @@ ${LEGAL_FOOTER}
 
 type GenerateResult = { text: string; transport: Transport; project?: string; location?: string };
 
+export const TIMEOUT_MS = 25_000;
+
+export class TimeoutError extends Error {}
+
 async function callGenerateContent(url: string, headers: Record<string, string>, body: unknown): Promise<string> {
-  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body), signal: ac.signal });
+  } catch (e) {
+    if (ac.signal.aborted) throw new TimeoutError(`${MODEL_ID} timed out after ${TIMEOUT_MS / 1000}s`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
   const raw = await res.text();
   if (!res.ok) {
     let msg = raw;
@@ -134,9 +148,10 @@ export async function generateLetter(a: Analysis): Promise<GenerateResult> {
     const text = await callGenerateContent(url, { authorization: `Bearer ${token.token}` }, body);
     return { text, transport: "vertex-adc", project, location };
   } catch (e) {
+    if (e instanceof TimeoutError) throw e; // do not spend another timeout on the fallback
     adcError = e instanceof Error ? e.message : String(e);
-    // Only fall through to the API key when credentials could not be obtained or the
-    // Vertex call itself failed. Either way the caller sees the real error if the key path also fails.
+    // Fall through to the API key when credentials could not be obtained or the
+    // Vertex call itself failed. The caller sees the real error if the key path also fails.
   }
 
   if (apiKey) {

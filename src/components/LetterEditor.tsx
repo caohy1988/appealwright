@@ -1,10 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { Button } from "./ui";
 
 export function LetterEditor({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled?: boolean }) {
   const [copied, setCopied] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    // Portal target exists only after mount.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMounted(true);
+  }, []);
   useEffect(() => {
     if (!copied) return;
     const t = setTimeout(() => setCopied(false), 1800);
@@ -43,9 +50,15 @@ export function LetterEditor({ value, onChange, disabled }: { value: string; onC
         spellCheck={false}
         aria-label="Appeal letter"
       />
-      <div id="letter-print" aria-hidden>
-        {value}
-      </div>
+      {/* Rendered as a direct child of <body> so the print stylesheet can hide everything else. */}
+      {mounted
+        ? createPortal(
+            <div id="letter-print" aria-hidden>
+              {value}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

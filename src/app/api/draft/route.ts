@@ -31,6 +31,18 @@ export async function POST(req: Request) {
   try {
     const result = await generateLetter(analysis);
     const missing = validateLetter(result.text, analysis);
+    if (missing.length > 0) {
+      return NextResponse.json(
+        {
+          error: `${MODEL_ID} draft rejected: not grounded on the selected comparables. Missing ${missing.length} item${missing.length === 1 ? "" : "s"}: ${missing.slice(0, 8).join("; ")}${missing.length > 8 ? "; …" : ""}`,
+          model: MODEL_ID,
+          transport: result.transport,
+          missing,
+          ms: Date.now() - started,
+        },
+        { status: 422 },
+      );
+    }
     return NextResponse.json({
       letter: result.text,
       model: MODEL_ID,
